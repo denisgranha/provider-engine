@@ -2,7 +2,8 @@ const EventEmitter = require('events').EventEmitter
 const inherits = require('util').inherits
 const ethUtil = require('ethereumjs-util')
 const EthBlockTracker = require('eth-block-tracker')
-const async = require('async')
+const map = require('async/map')
+const eachSeries = require('async/eachSeries')
 const Stoplight = require('./util/stoplight.js')
 const cacheUtils = require('./util/rpc-cache-utils.js')
 const createPayload = require('./util/create-payload.js')
@@ -29,11 +30,16 @@ function Web3ProviderEngine(opts) {
     const bufferBlock = toBufferBlock(jsonBlock)
     self._setCurrentBlock(bufferBlock)
   })
+
+  // emit block events from the block tracker
+  self._blockTracker.on('block', self.emit.bind(self, 'rawBlock'))
+  self._blockTracker.on('sync', self.emit.bind(self, 'sync'))
+  self._blockTracker.on('latest', self.emit.bind(self, 'latest'))
+
   // set initialization blocker
   self._ready = new Stoplight()
   // unblock initialization after first block
-  self._blockTracker.once('latest', () => {
-    console.log('_blockTracker wait for first block')
+  self._blockTracker.once('block', () => {
     self._ready.go()
   })
   // local state
@@ -71,7 +77,7 @@ Web3ProviderEngine.prototype.sendAsync = function(payload, cb){
 
     if (Array.isArray(payload)) {
       // handle batch
-      async.map(payload, self._handleAsync.bind(self), cb)
+      map(payload, self._handleAsync.bind(self), cb)
     } else {
       // handle single
       self._handleAsync(payload, cb)
@@ -114,7 +120,7 @@ Web3ProviderEngine.prototype._handleAsync = function(payload, finished) {
     error = _error
     result = _result
 
-    async.eachSeries(stack, function(fn, callback) {
+    eachSeries(stack, function(fn, callback) {
 
       if (fn) {
         fn(error, result, callback)
@@ -139,7 +145,7 @@ Web3ProviderEngine.prototype._handleAsync = function(payload, finished) {
         // respond with both error formats
         finished(error, resultObj)
       } else {
-        self._inspectResponseForNewBlock(payload, resultObj, finished)
+        finished(null, resultObj)
       }
     })
   }
@@ -155,30 +161,7 @@ Web3ProviderEngine.prototype._setCurrentBlock = function(block){
   self.emit('block', block)
 }
 
-Web3ProviderEngine.prototype._inspectResponseForNewBlock = function(payload, resultObj, cb) {
-  const self = this
-
-  // these methods return responses with a block reference
-  if (payload.method !== 'eth_getTransactionByHash'
-   && payload.method !== 'eth_getTransactionReceipt') {
-    return cb(null, resultObj)
-  }
-
-  if (resultObj.result === null
-   || resultObj.result.blockNumber === null) {
-    return cb(null, resultObj)
-  }
-  
-  cb(null, resultObj)
-
-
-}
-
 // util
-
-function SourceNotFoundError (payload) {
-  return new Error('Source for RPC method "'+payload.method+'" not found.')
-}
 
 function toBufferBlock (jsonBlock) {
   return {
